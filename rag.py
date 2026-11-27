@@ -1,8 +1,4 @@
-"""The RAG pipeline: load -> split -> embed -> store -> retrieve -> generate.
-
-Every function here is small on purpose. Read it top to bottom once and you
-understand the whole project.
-"""
+"""RAG pipeline: load, split, embed, store, retrieve, generate."""
 import os
 from functools import lru_cache
 
@@ -15,17 +11,14 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from llm import get_llm
 
-DB_DIR = "db"                 # Chroma saves the vectors here (on disk)
+DB_DIR = "db"
 COLLECTION = "study_notes"
-CHUNK_SIZE = 500              # characters per chunk
-CHUNK_OVERLAP = 50            # characters shared between neighbouring chunks
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 50
 
 
-# ---------- 1. Embeddings + vector store ----------
-
-@lru_cache  # load the embedding model only once (it's ~90 MB)
+@lru_cache
 def get_embeddings():
-    # Runs locally on your laptop: free and no API key.
     return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 
@@ -37,21 +30,18 @@ def get_store() -> Chroma:
     )
 
 
-# ---------- 2. Indexing (load -> split -> embed -> store) ----------
-
 def build_index(pdf_paths: list[str]) -> tuple[int, int]:
-    """Read PDFs, split them into chunks and store their embeddings.
-    Returns (number_of_pages, number_of_chunks)."""
+    """Index PDFs. Returns (pages, chunks)."""
     pages = []
     for path in pdf_paths:
-        pages.extend(PyPDFLoader(path).load())  # one Document per page
+        pages.extend(PyPDFLoader(path).load())
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
     chunks = splitter.split_documents(pages)
 
     store = get_store()
-    store.reset_collection()      # start fresh so old notes don't mix in
-    store.add_documents(chunks)   # embeds every chunk and saves it
+    store.reset_collection()
+    store.add_documents(chunks)
     return len(pages), len(chunks)
 
 
@@ -59,14 +49,11 @@ def has_index() -> bool:
     return os.path.isdir(DB_DIR) and get_store()._collection.count() > 0
 
 
-# ---------- 3. Retrieval helpers ----------
-
 def format_docs(docs) -> str:
-    """Turn retrieved chunks into one context string, each tagged with its source."""
     parts = []
     for d in docs:
         src = os.path.basename(d.metadata.get("source", "notes"))
-        page = d.metadata.get("page", 0) + 1  # PyPDF pages start at 0
+        page = d.metadata.get("page", 0) + 1
         parts.append(f"[{src} p.{page}]\n{d.page_content}")
     return "\n\n".join(parts)
 
@@ -80,26 +67,22 @@ def sources_of(docs) -> list[str]:
     return seen
 
 
-# ---------- 4. Question answering (retrieve -> generate) ----------
-
 ANSWER_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
-     "You are a friendly study assistant. Answer the student's question using ONLY the context "
-     "from their notes below. If the answer is not in the context, say: "
-     "\"I couldn't find that in your notes.\" Keep answers clear and simple.\n\n"
+     "Answer the question using ONLY the context "
+     "from the notes below. If the answer is not in the context, say: "
+     "\"I couldn't find that in your notes.\" Be concise.\n\n"
      "Context:\n{context}"),
     ("human", "{question}"),
 ])
 
 
 def ask(question: str, k: int = 4) -> tuple[str, list[str]]:
-    docs = get_store().similarity_search(question, k=k)   # RETRIEVE
-    chain = ANSWER_PROMPT | get_llm()                      # prompt -> LLM (LCEL pipe)
-    reply = chain.invoke({"context": format_docs(docs), "question": question})  # GENERATE
+    docs = get_store().similarity_search(question, k=k)
+    chain = ANSWER_PROMPT | get_llm()
+    reply = chain.invoke({"context": format_docs(docs), "question": question})
     return reply.content, sources_of(docs)
 
-
-# ---------- 5. Quiz generation (structured output with Pydantic) ----------
 
 class QuizQuestion(BaseModel):
     question: str = Field(description="The question text")
@@ -121,6 +104,6 @@ def make_quiz(topic: str, n: int = 5) -> Quiz:
         f"{format_docs(docs)}"
     )
     quiz = quiz_llm.invoke(prompt)
-    # Never trust the LLM blindly: drop malformed questions.
+    # drop malformed questions
     quiz.questions = [q for q in quiz.questions if len(q.options) == 4 and 0 <= q.answer_index < 4]
     return quiz
