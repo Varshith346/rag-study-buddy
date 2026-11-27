@@ -1,0 +1,13 @@
+# Secrets: NEVER commit your .env
+.env
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Local data
+db/
+*.db
+*.sqlite3
